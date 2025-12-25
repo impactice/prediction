@@ -487,22 +487,168 @@ input("✅ 확률 분석 완료. 종료하려면 엔터 키를 누르세요...")
 ```
 
 ## ver5 
-파생 변수(Feature Engineering) 추가:
+1. 파생 변수(Feature Engineering) 추가:
+- 기존: AI에게 "1, 2, 3..." 번호만 줬습니다.
+- 변경: 번호뿐만 아니라 **"번호의 합계(Sum)"**와 "홀짝 비율(Odd/Even)" 같은 힌트를 같이 줍니다. 마치 수학 문제를 풀 때 공식도 같이 알려주는 것과 같습니다.
 
-기존: AI에게 "1, 2, 3..." 번호만 줬습니다.
-
-변경: 번호뿐만 아니라 **"번호의 합계(Sum)"**와 "홀짝 비율(Odd/Even)" 같은 힌트를 같이 줍니다. 마치 수학 문제를 풀 때 공식도 같이 알려주는 것과 같습니다.
-
-어텐션(Attention) 메커니즘 도입:
-
+2. 어텐션(Attention) 메커니즘 도입:
 이것이 바로 ChatGPT의 핵심 기술입니다.
-
 과거 50주를 볼 때, 모든 회차를 똑같이 중요하게 보는 게 아니라, **"패턴상 중요한 회차"에 더 집중(Attention)**하도록 만듭니다.
 
-동적 학습률(Dynamic Learning Rate):
-
+3. 동적 학습률(Dynamic Learning Rate):
 처음엔 크게크게 배우다가, 정답에 가까워질수록 아주 미세하게 조정하며 학습하도록 학습 속도를 조절합니다.
 
+```
+import pandas as pd
+import numpy as np
+import tensorflow as tf
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import LSTM, Dense, Input, Bidirectional, Dropout, BatchNormalization, MultiHeadAttention, LayerNormalization, Concatenate
+from tensorflow.keras.callbacks import ReduceLROnPlateau, EarlyStopping
+import sys
+import os
 
+# 1. 환경 설정
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+import warnings
+warnings.filterwarnings('ignore')
+
+print("📂 [ULTIMATE PRO] 로또 예측의 끝판왕 모델을 가동합니다...")
+print("👉 적용 기술: Feature Engineering + Self-Attention + Dynamic Learning")
+
+# 2. 데이터 읽기 및 파생변수 생성
+def read_csv_safe(filename):
+    try:
+        return pd.read_csv(filename, encoding='utf-8', header=None)
+    except UnicodeDecodeError:
+        return pd.read_csv(filename, encoding='cp949', header=None)
+
+try:
+    df1 = read_csv_safe('당첨(1~600).csv')
+    df2 = read_csv_safe('당첨(601~1203).csv')
+    
+    # 헤더 제거 및 통합
+    data1 = df1.iloc[3:]
+    data2 = df2.iloc[3:]
+    full_df = pd.concat([data2, data1], axis=0)
+    
+    # 열 구조 정리 (1~7열)
+    full_df = full_df[[1, 2, 3, 4, 5, 6, 7]]
+    full_df.columns = ['Round', 'Num1', 'Num2', 'Num3', 'Num4', 'Num5', 'Num6']
+    full_df = full_df.apply(pd.to_numeric, errors='coerce').dropna()
+    full_df = full_df.sort_values('Round').reset_index(drop=True)
+    
+    # --- 🔥 [업그레이드 1] 파생 변수(힌트) 생성 🔥 ---
+    print("⚙️ 데이터를 정밀 분석하여 '합계'와 '홀짝 비율' 정보를 추가합니다...")
+    
+    # 번호 데이터
+    num_data = full_df[['Num1', 'Num2', 'Num3', 'Num4', 'Num5', 'Num6']].values
+    
+    # 1. 합계(Sum) 계산 및 정규화 (대략 255가 최대라고 가정)
+    sums = np.sum(num_data, axis=1).reshape(-1, 1) / 255.0
+    
+    # 2. 홀수 개수(Odd Count) 계산 및 정규화 (0~6개)
+    odds = np.sum(num_data % 2, axis=1).reshape(-1, 1) / 6.0
+    
+    # 3. 원본 번호 정규화
+    scaled_numbers = num_data / 45.0
+    
+    # 모든 정보를 합침 (입력 데이터가 6개에서 8개로 늘어남!)
+    # [번호1, 번호2, ..., 번호6, 합계, 홀수개수]
+    final_input_data = np.hstack([scaled_numbers, sums, odds])
+    
+    # 정답지(Target) 생성 - 원-핫 인코딩
+    def numbers_to_onehot(rows):
+        onehot = np.zeros((len(rows), 46))
+        for i, row in enumerate(rows):
+            for num in row:
+                onehot[i, int(num)] = 1
+        return onehot[:, 1:] # 1~45번만 사용
+
+    window_size = 50 # 과거 50주 패턴 분석
+    
+    def create_dataset(input_features, original_nums, window_size):
+        X, y = [], []
+        for i in range(len(input_features) - window_size):
+            X.append(input_features[i : i + window_size])
+            # 정답은 다음 회차의 실제 번호
+            y.append(original_nums[i + window_size])
+        return np.array(X), np.array(y)
+        
+    X, y_indices = create_dataset(final_input_data, num_data, window_size)
+    y = numbers_to_onehot(y_indices)
+    
+    # 예측용 마지막 데이터
+    last_window = final_input_data[-window_size:]
+    last_window = last_window.reshape((1, window_size, 8)) # 8개 특징(Feature)
+
+    print(f"✅ 데이터 준비 완료! (입력 차원: {window_size}x8)")
+
+except Exception as e:
+    print(f"\n❌ 오류: {e}")
+    sys.exit()
+
+# 3. Transformer + LSTM 하이브리드 모델 설계
+print(f"\n🚀 [Hybrid AI] Attention 기술이 적용된 모델을 생성합니다...")
+print("=" * 60)
+
+labels = ['A', 'B', 'C', 'D', 'E']
+
+for i in range(5):
+    print(f"\n🧠 [AI 모델 {labels[i]} 학습 중... (스마트 학습 모드)]")
+    
+    # --- 모델 구조 (Functional API 사용) ---
+    inputs = Input(shape=(window_size, 8))
+    
+    # 1단계: LSTM으로 시계열 흐름 파악
+    x = Bidirectional(LSTM(128, return_sequences=True))(inputs)
+    x = Dropout(0.3)(x)
+    
+    # 2단계: Self-Attention (중요한 회차 강조)
+    # 챗GPT와 같은 원리로, 데이터 내의 연관성을 찾습니다.
+    # key_dim은 내적 차원 수
+    att_out = MultiHeadAttention(num_heads=4, key_dim=64)(x, x)
+    x = LayerNormalization(epsilon=1e-6)(x + att_out) # Residual Connection
+    
+    # 3단계: 요약 및 추론
+    x = LSTM(64, return_sequences=False)(x)
+    x = Dropout(0.3)(x)
+    x = Dense(128, activation='relu')(x)
+    x = BatchNormalization()(x)
+    
+    # 4단계: 최종 확률 출력 (1~45번)
+    outputs = Dense(45, activation='sigmoid')(x)
+    
+    model = Model(inputs=inputs, outputs=outputs)
+    
+    model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
+    
+    # --- 🔥 [업그레이드 3] 동적 학습률 조정 🔥 ---
+    # 학습이 정체되면 학습률(Learning Rate)을 0.5배로 낮춰서 더 섬세하게 학습함
+    lr_scheduler = ReduceLROnPlateau(monitor='loss', factor=0.5, patience=5, min_lr=0.00001, verbose=0)
+    
+    # 학습 (150회)
+    model.fit(X, y, epochs=150, batch_size=32, callbacks=[lr_scheduler], verbose=0)
+    
+    # 예측
+    prob_prediction = model.predict(last_window, verbose=0)[0]
+    
+    # 상위 6개 추출
+    top_6_indices = prob_prediction.argsort()[-6:]
+    final_nums = np.sort(top_6_indices + 1)
+    
+    # 확신도 계산
+    confidence = prob_prediction[top_6_indices].mean() * 100
+    
+    # 합계 및 홀짝 정보도 같이 출력 (AI가 고려한 요소)
+    pred_sum = sum(final_nums)
+    pred_odd = sum([1 for n in final_nums if n % 2 != 0])
+    
+    print(f"👉 Game {labels[i]} 추천: {final_nums}")
+    print(f"   (AI 확신도: {confidence:.1f}% | 예상 합계: {pred_sum} | 홀수: {pred_odd}개)")
+
+print("\n" + "=" * 60)
+input("✅ ULTIMATE 분석 완료. 종료하려면 엔터 키를 누르세요...")
+```
 
 
