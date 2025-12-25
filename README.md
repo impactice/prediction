@@ -651,4 +651,137 @@ print("\n" + "=" * 60)
 input("✅ ULTIMATE 분석 완료. 종료하려면 엔터 키를 누르세요...")
 ```
 
+## ver6 
 
+해결책: "숫자" 대신 "지도(Map)"를 보여주자!
+AI가 훨씬 더 쉽게 패턴을 찾고 확신을 가질 수 있도록 데이터 형태를 **'원-핫 인코딩(One-Hot Encoding)'**으로 바꿔서 입력
+
+기존 방식: "3번 공이 나왔어" (AI: 3이 뭐지? 숫자 크기인가?)
+
+변경 방식: "45개의 전구 중 3번째 전구에 불이 켜졌어! " (AI: 아하! 위치가 딱 보이네!)
+
+```
+import pandas as pd
+import numpy as np
+import tensorflow as tf
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense, Input, Bidirectional, Flatten, Dropout
+import sys
+import os
+
+# 1. 환경 설정
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+import warnings
+warnings.filterwarnings('ignore')
+
+print("🔥🔥 [REAL CONFIDENCE] 인위적 보정 없이, 데이터 구조 변경으로 확신도를 높입니다 🔥🔥")
+print("👉 핵심 기술: Full One-Hot Input (숫자가 아닌 '위치'로 학습)")
+
+# 2. 데이터 읽기
+def read_csv_safe(filename):
+    try:
+        return pd.read_csv(filename, encoding='utf-8', header=None)
+    except UnicodeDecodeError:
+        return pd.read_csv(filename, encoding='cp949', header=None)
+
+try:
+    df1 = read_csv_safe('당첨(1~600).csv')
+    df2 = read_csv_safe('당첨(601~1203).csv')
+    
+    data1 = df1.iloc[3:]
+    data2 = df2.iloc[3:]
+    full_df = pd.concat([data2, data1], axis=0)
+    
+    full_df = full_df[[1, 2, 3, 4, 5, 6, 7]]
+    full_df.columns = ['Round', 'Num1', 'Num2', 'Num3', 'Num4', 'Num5', 'Num6']
+    full_df = full_df.apply(pd.to_numeric, errors='coerce').dropna()
+    full_df = full_df.sort_values('Round').reset_index(drop=True)
+    
+    # 데이터 준비
+    num_data = full_df[['Num1', 'Num2', 'Num3', 'Num4', 'Num5', 'Num6']].values
+    
+    # --- 🔥 [핵심 변경] 입력 데이터도 '원-핫 인코딩'으로 변환 🔥 ---
+    # 숫자를 그대로 쓰지 않고, 45개의 0/1 스위치로 변환해서 보여줍니다.
+    # 이렇게 하면 AI가 패턴을 훨씬 더 선명하게 인식합니다.
+    
+    def numbers_to_onehot(rows):
+        onehot = np.zeros((len(rows), 45)) # 45개 공간 (0~44 인덱스 사용)
+        for i, row in enumerate(rows):
+            for num in row:
+                # 로또 번호 1~45를 인덱스 0~44로 변환 (-1)
+                onehot[i, int(num)-1] = 1
+        return onehot
+
+    # 모든 회차를 0과 1의 지도로 바꿈
+    onehot_data = numbers_to_onehot(num_data)
+    
+    window_size = 20 # 패턴 인식을 위해 최근 20주 사용
+    
+    def create_dataset(onehot_data, window_size):
+        X, y = [], []
+        for i in range(len(onehot_data) - window_size):
+            X.append(onehot_data[i : i + window_size])
+            y.append(onehot_data[i + window_size])
+        return np.array(X), np.array(y)
+        
+    X, y = create_dataset(onehot_data, window_size)
+    
+    # 예측용 마지막 데이터
+    last_window = onehot_data[-window_size:]
+    last_window = last_window.reshape((1, window_size, 45))
+
+    print(f"✅ 데이터 변환 완료: 입력 데이터 형태가 (숫자) -> (45개 스위치)로 변경되었습니다.")
+
+except Exception as e:
+    print(f"❌ 오류: {e}")
+    sys.exit()
+
+# 3. 모델 설계 (학습 능력 극대화)
+print(f"\n🚀 [Pure Logic] AI 학습 시작 (보정 함수 없음)...")
+print("=" * 60)
+
+labels = ['A', 'B', 'C', 'D', 'E']
+
+for i in range(5):
+    print(f"\n🧠 [AI 모델 {labels[i]} 정밀 학습 중...]")
+    
+    model = Sequential([
+        Input(shape=(window_size, 45)), # 입력도 45개짜리 비트맵
+        
+        # 1. 정보를 압축하지 않고 그대로 패턴을 읽음
+        Bidirectional(LSTM(256, return_sequences=True)),
+        
+        # 2. 과감하게 Dropout 제거 (확신도 상승 요인)
+        # Dropout이 없으면 AI는 '모 아니면 도' 식으로 확실한 것만 외웁니다.
+        
+        Flatten(), # 모든 정보를 한 줄로 펼침
+        
+        # 3. 아주 깊고 넓은 신경망
+        Dense(1024, activation='relu'), 
+        Dense(512, activation='relu'),
+        
+        # 4. 최종 출력 (45개 번호의 확률)
+        Dense(45, activation='sigmoid')
+    ])
+    
+    model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
+    
+    # 학습 횟수 400회 (충분히 확신을 가질 때까지)
+    model.fit(X, y, epochs=400, batch_size=64, verbose=0)
+    
+    # 예측 (보정 함수 sharpen_prob 삭제함!)
+    raw_prediction = model.predict(last_window, verbose=0)[0]
+    
+    # 상위 6개 추출
+    top_6_indices = raw_prediction.argsort()[-6:]
+    final_nums = np.sort(top_6_indices + 1)
+    
+    # 순수 AI 확신도 계산
+    confidence = raw_prediction[top_6_indices].mean() * 100
+    
+    print(f"👉 Game {labels[i]} 추천: {final_nums}")
+    print(f"   (💡 순수 확신도: {confidence:.1f}%)")
+
+print("\n" + "=" * 60)
+input("✅ 예측 완료. 종료하려면 엔터 키를 누르세요...")
+```
