@@ -942,3 +942,160 @@ for i in range(5):
 print("\n" + "=" * 60)
 input("✅ 분석 완료. 종료하려면 엔터 키를 누르세요...")
 ```
+
+
+## ver8 
+
+```
+import pandas as pd
+import numpy as np
+import tensorflow as tf
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import LSTM, Dense, Input, Bidirectional, Flatten, Dropout, MultiHeadAttention, LayerNormalization, Concatenate
+import sys
+import os
+import itertools # 조합 생성을 위한 도구 추가
+
+# 1. 환경 설정
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+import warnings
+warnings.filterwarnings('ignore')
+
+print("👑 [MASTERPIECE + Filtering] 과거 당첨 번호 제외 기능 탑재 👑")
+print("👉 AI가 추천한 번호가 이미 당첨된 적이 있다면, 자동으로 다른 최적의 번호를 찾습니다.")
+
+# 2. 데이터 읽기
+def read_csv_safe(filename):
+    try:
+        return pd.read_csv(filename, encoding='utf-8', header=None)
+    except UnicodeDecodeError:
+        return pd.read_csv(filename, encoding='cp949', header=None)
+
+try:
+    df1 = read_csv_safe('당첨(1~600).csv')
+    df2 = read_csv_safe('당첨(601~1203).csv')
+    
+    data1 = df1.iloc[3:]
+    data2 = df2.iloc[3:]
+    full_df = pd.concat([data2, data1], axis=0)
+    
+    full_df = full_df[[1, 2, 3, 4, 5, 6, 7]]
+    full_df.columns = ['Round', 'Num1', 'Num2', 'Num3', 'Num4', 'Num5', 'Num6']
+    full_df = full_df.apply(pd.to_numeric, errors='coerce').dropna()
+    full_df = full_df.sort_values('Round').reset_index(drop=True)
+    
+    # 숫자 데이터 (1~45)
+    num_data = full_df[['Num1', 'Num2', 'Num3', 'Num4', 'Num5', 'Num6']].values
+
+    # --- 🔥 [필터링 시스템 준비] 과거 당첨 번호 저장 🔥 ---
+    print("⚙️ 과거 모든 회차의 당첨 번호를 메모리에 등록 중...", end="")
+    past_combinations = set()
+    for row in num_data:
+        # 1등 번호를 정렬해서 튜플로 저장 (검색 속도 최적화)
+        past_combinations.add(tuple(sorted(row)))
+    print(f" 완료! (총 {len(past_combinations)}개의 금지된 조합)")
+
+    # 미출현 기간 데이터 생성 (기존 로직)
+    cold_data = np.zeros((len(num_data), 45))
+    current_cold = np.zeros(45)
+    
+    for i in range(len(num_data)):
+        winning_nums = num_data[i] - 1
+        current_cold += 1
+        current_cold[winning_nums.astype(int)] = 0
+        cold_data[i] = current_cold.copy()
+        
+    cold_data = cold_data / 50.0
+
+    # 원-핫 인코딩
+    def numbers_to_onehot(rows):
+        onehot = np.zeros((len(rows), 45))
+        for i, row in enumerate(rows):
+            for num in row:
+                onehot[i, int(num)-1] = 1
+        return onehot
+
+    onehot_data = numbers_to_onehot(num_data)
+    
+    # 입력 데이터 결합 (번호패턴 + 미출현패턴)
+    final_input = np.concatenate([onehot_data, cold_data], axis=1)
+    
+    window_size = 20
+    
+    def create_dataset(input_data, target_data, window_size):
+        X, y = [], []
+        for i in range(len(input_data) - window_size):
+            X.append(input_data[i : i + window_size])
+            y.append(target_data[i + window_size])
+        return np.array(X), np.array(y)
+        
+    X, y = create_dataset(final_input, onehot_data, window_size)
+    last_window = final_input[-window_size:].reshape((1, window_size, 90))
+
+    print(f"✅ 데이터 준비 완료.")
+
+except Exception as e:
+    print(f"❌ 오류: {e}")
+    sys.exit()
+
+# 3. 모델 학습 및 예측
+print(f"\n🚀 [AI Prediction] 분석 및 필터링 시작...")
+print("=" * 60)
+
+labels = ['A', 'B', 'C', 'D', 'E']
+
+for i in range(5):
+    print(f"\n🧠 [AI 모델 {labels[i]} 학습 중...]")
+    
+    # 모델 구조 (Transformer + LSTM)
+    inputs = Input(shape=(window_size, 90))
+    att_output = MultiHeadAttention(num_heads=4, key_dim=64)(inputs, inputs)
+    att_output = LayerNormalization(epsilon=1e-6)(att_output + inputs)
+    x = Bidirectional(LSTM(128, return_sequences=False))(att_output)
+    x = Dense(512, activation='relu')(x)
+    x = Dropout(0.2)(x)
+    outputs = Dense(45, activation='sigmoid')(x)
+    
+    model = Model(inputs=inputs, outputs=outputs)
+    model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
+    
+    # 학습
+    model.fit(X, y, epochs=200, batch_size=32, verbose=0)
+    
+    # 예측
+    raw_prediction = model.predict(last_window, verbose=0)[0]
+    
+    # --- 🔥 [스마트 필터링 로직] 중복 없는 최적 조합 찾기 🔥 ---
+    # 1. 확률이 높은 상위 10개 공을 후보로 뽑습니다.
+    #    (6개만 뽑으면 중복일 때 대안이 없으므로 여유 있게 뽑음)
+    top_candidates_indices = raw_prediction.argsort()[-10:][::-1] # 상위 10개 내림차순
+    
+    best_combination = None
+    best_score = -1
+    
+    # 2. 상위 10개 공으로 만들 수 있는 모든 6개 조합을 검사합니다. (총 210가지 경우)
+    #    itertools.combinations를 사용해 조합 생성
+    for combo in itertools.combinations(top_candidates_indices, 6):
+        # 1~45 번호로 변환 및 정렬
+        current_nums = tuple(sorted(np.array(combo) + 1))
+        
+        # 3. 과거 당첨 이력에 있는지 확인 (필터링)
+        if current_nums in past_combinations:
+            continue # 이미 나왔던 번호면 건너뜀 (탈락!)
+            
+        # 4. 살아남은 조합 중 '확률 합계'가 가장 높은 것을 선택
+        current_score = sum(raw_prediction[idx] for idx in combo)
+        if current_score > best_score:
+            best_score = current_score
+            best_combination = current_nums
+    
+    # 결과 확정
+    final_nums = np.array(best_combination)
+    confidence = (best_score / 6) * 100 # 평균 확신도
+    
+    print(f"👉 Game {labels[i]} 추천: {final_nums}")
+    print(f"   (💡 필터링 완료 | 종합 확신도: {confidence:.1f}%)")
+
+print("\n" + "=" * 60)
+input("✅ 모든 분석이 완료되었습니다. 엔터 키를 눌러 종료하세요...")
+```
