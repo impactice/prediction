@@ -1099,3 +1099,270 @@ for i in range(5):
 print("\n" + "=" * 60)
 input("✅ 모든 분석이 완료되었습니다. 엔터 키를 눌러 종료하세요...")
 ```
+
+## ver9 (오류가 있는 초기 버전)
+
+문제점 
+- 2번째 부터 5번째까지 똑같은 숫자가 나오는 현상 발생
+- 확신도가 너무 낮은 현상 발생
+```
+import pandas as pd
+import numpy as np
+import tensorflow as tf
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import LSTM, Dense, Input, Bidirectional, Flatten, Dropout, MultiHeadAttention, LayerNormalization, Add
+from tensorflow.keras.callbacks import ReduceLROnPlateau
+import sys
+import os
+import random
+
+# 1. 환경 설정
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+import warnings
+warnings.filterwarnings('ignore')
+
+print("👑 [GOD MODE] 유전 알고리즘(Genetic Algorithm) + 3중 앙상블 시스템 가동 👑")
+print("👉 1단계: 3개의 AI가 집단 지성으로 확률 계산")
+print("👉 2단계: 유전 알고리즘이 수만 번의 진화 시뮬레이션을 통해 최적 조합 도출")
+print("⏳ 계산량이 많아 시간이 다소 소요됩니다. 잠시만 기다려주세요...")
+
+# 2. 데이터 읽기 및 전처리
+def read_csv_safe(filename):
+    try:
+        return pd.read_csv(filename, encoding='utf-8', header=None)
+    except UnicodeDecodeError:
+        return pd.read_csv(filename, encoding='cp949', header=None)
+
+try:
+    df1 = read_csv_safe('당첨(1~600).csv')
+    df2 = read_csv_safe('당첨(601~1203).csv')
+    
+    data1 = df1.iloc[3:]
+    data2 = df2.iloc[3:]
+    full_df = pd.concat([data2, data1], axis=0)
+    
+    full_df = full_df[[1, 2, 3, 4, 5, 6, 7]]
+    full_df.columns = ['Round', 'Num1', 'Num2', 'Num3', 'Num4', 'Num5', 'Num6']
+    full_df = full_df.apply(pd.to_numeric, errors='coerce').dropna()
+    full_df = full_df.sort_values('Round').reset_index(drop=True)
+    
+    num_data = full_df[['Num1', 'Num2', 'Num3', 'Num4', 'Num5', 'Num6']].values
+
+    # --- 과거 당첨 번호 저장 (필터링용) ---
+    past_combinations = set()
+    for row in num_data:
+        past_combinations.add(tuple(sorted(row)))
+
+    # --- 데이터 특성 엔지니어링 ---
+    # 1. 미출현 기간 (Cold Data)
+    cold_data = np.zeros((len(num_data), 45))
+    current_cold = np.zeros(45)
+    for i in range(len(num_data)):
+        winning_nums = num_data[i] - 1
+        current_cold += 1
+        current_cold[winning_nums.astype(int)] = 0
+        cold_data[i] = current_cold.copy()
+    cold_data = cold_data / 50.0
+
+    # 2. 원-핫 인코딩
+    def numbers_to_onehot(rows):
+        onehot = np.zeros((len(rows), 45))
+        for i, row in enumerate(rows):
+            for num in row:
+                onehot[i, int(num)-1] = 1
+        return onehot
+
+    onehot_data = numbers_to_onehot(num_data)
+    
+    # 3. 입력 데이터 결합 (번호패턴 + 미출현패턴) -> 차원 90
+    final_input = np.concatenate([onehot_data, cold_data], axis=1)
+    
+    window_size = 25 # 패턴 분석 길이 약간 증가
+    
+    def create_dataset(input_data, target_data, window_size):
+        X, y = [], []
+        for i in range(len(input_data) - window_size):
+            X.append(input_data[i : i + window_size])
+            y.append(target_data[i + window_size])
+        return np.array(X), np.array(y)
+        
+    X, y = create_dataset(final_input, onehot_data, window_size)
+    last_window = final_input[-window_size:].reshape((1, window_size, 90))
+
+    print(f"✅ 데이터 준비 완료. (입력 차원: 90)")
+
+except Exception as e:
+    print(f"❌ 오류: {e}")
+    sys.exit()
+
+# 3. 모델 정의 (ResNet 스타일의 깊은 모델)
+def create_advanced_model():
+    inputs = Input(shape=(window_size, 90))
+    
+    # Transformer Block
+    att = MultiHeadAttention(num_heads=4, key_dim=64)(inputs, inputs)
+    att = LayerNormalization(epsilon=1e-6)(Add()([inputs, att]))
+    
+    # LSTM Block with Residual Connection
+    x = Bidirectional(LSTM(128, return_sequences=True))(att)
+    x = Dropout(0.3)(x)
+    x = Bidirectional(LSTM(64, return_sequences=False))(x)
+    
+    # Deep Dense Layers
+    x = Dense(256, activation='relu')(x)
+    x = Dropout(0.2)(x)
+    x = Dense(128, activation='relu')(x)
+    
+    outputs = Dense(45, activation='sigmoid')(x)
+    
+    model = Model(inputs=inputs, outputs=outputs)
+    model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
+    return model
+
+# 4. 유전 알고리즘 (Genetic Algorithm) 클래스
+class LottoGeneticOptimizer:
+    def __init__(self, probabilities, past_history, population_size=500, generations=50):
+        self.probs = probabilities # AI가 예측한 45개 번호의 확률
+        self.past_history = past_history
+        self.pop_size = population_size
+        self.generations = generations
+        self.mutation_rate = 0.1
+        
+    def create_individual(self):
+        # 확률에 기반하여 6개 번호 랜덤 선택 (룰렛 휠 방식)
+        # 확률이 높은 공이 뽑힐 가능성이 높음
+        indices = np.arange(1, 46)
+        # 확률 정규화
+        p = self.probs / self.probs.sum()
+        return sorted(np.random.choice(indices, 6, replace=False, p=p))
+        
+    def fitness(self, individual):
+        # 1. AI 확률 점수 (기본 점수)
+        score = sum([self.probs[num-1] for num in individual])
+        
+        # 2. 통계적 제약 조건 (패널티 부여)
+        
+        # 합계 필터 (보통 100~200 사이가 많이 나옴)
+        total_sum = sum(individual)
+        if total_sum < 100 or total_sum > 230:
+            score -= 2.0 # 강력한 감점
+            
+        # 홀짝 비율 필터 (6:0, 0:6은 잘 안 나옴)
+        odds = sum([1 for n in individual if n % 2 != 0])
+        if odds == 0 or odds == 6:
+            score -= 1.0
+            
+        # 연속 번호 필터 (3연속 번호 등은 드묾)
+        # 예: 1, 2, 3 -> 감점
+        consecutive = 0
+        for i in range(len(individual)-1):
+            if individual[i+1] == individual[i] + 1:
+                consecutive += 1
+        if consecutive >= 2: # 3연번 이상
+            score -= 1.5
+            
+        # 3. 과거 당첨 이력 필터 (절대 금지)
+        if tuple(individual) in self.past_history:
+            score -= 100.0 # 생존 불가
+            
+        return score
+    
+    def evolve(self):
+        # 초기 세대 생성
+        population = [self.create_individual() for _ in range(self.pop_size)]
+        
+        for gen in range(self.generations):
+            # 점수 계산 및 정렬
+            scored_pop = [(ind, self.fitness(ind)) for ind in population]
+            scored_pop.sort(key=lambda x: x[1], reverse=True)
+            
+            # 상위 20% 생존 (Elitism)
+            survivors = [x[0] for x in scored_pop[:int(self.pop_size * 0.2)]]
+            
+            # 다음 세대 생성
+            next_gen = survivors[:]
+            while len(next_gen) < self.pop_size:
+                # 부모 선택 (토너먼트)
+                parent1 = random.choice(survivors)
+                parent2 = random.choice(survivors)
+                
+                # 교배 (Crossover)
+                split = random.randint(1, 5)
+                child = sorted(list(set(parent1[:split] + parent2[split:])))
+                
+                # 자식 번호가 6개가 안 되면 채워넣기
+                while len(child) < 6:
+                    new_num = random.randint(1, 45)
+                    if new_num not in child:
+                        child.append(new_num)
+                child = sorted(child[:6])
+                
+                # 돌연변이 (Mutation)
+                if random.random() < self.mutation_rate:
+                    remove_idx = random.randint(0, 5)
+                    child.pop(remove_idx)
+                    while len(child) < 6:
+                        new_num = random.randint(1, 45)
+                        if new_num not in child:
+                            child.append(new_num)
+                    child.sort()
+                
+                next_gen.append(child)
+            
+            population = next_gen
+            
+        # 최종 우승자 반환
+        scored_pop = [(ind, self.fitness(ind)) for ind in population]
+        scored_pop.sort(key=lambda x: x[1], reverse=True)
+        return scored_pop[0] # (조합, 점수)
+
+# 5. 실행 로직 (앙상블 + 유전 알고리즘)
+print(f"\n🚀 [Ensemble + GA] 초정밀 분석 시작...")
+print("=" * 60)
+
+labels = ['A', 'B', 'C', 'D', 'E']
+
+# 학습률 스케줄러
+lr_scheduler = ReduceLROnPlateau(monitor='loss', factor=0.5, patience=3, verbose=0)
+
+for i in range(5):
+    print(f"\n🧠 [Game {labels[i]}] 분석 중...")
+    
+    # --- 1단계: 앙상블 (3개의 모델을 독립적으로 학습시켜 평균) ---
+    print(f"   ↳ 🤖 AI 모델 3개를 동시에 학습시켜 편향을 제거합니다...", end="")
+    ensemble_preds = []
+    
+    for m in range(3): # 모델 3개
+        model = create_advanced_model()
+        # epoch는 150회로 충분 (3번 하니까)
+        model.fit(X, y, epochs=150, batch_size=32, callbacks=[lr_scheduler], verbose=0)
+        pred = model.predict(last_window, verbose=0)[0]
+        ensemble_preds.append(pred)
+        
+    # 3개 모델의 예측값 평균 (앙상블 결과)
+    avg_prediction = np.mean(ensemble_preds, axis=0)
+    print(" 완료!")
+    
+    # --- 2단계: 유전 알고리즘 (최적화) ---
+    print(f"   ↳ 🧬 유전 알고리즘으로 최적의 조합을 진화시키는 중...", end="")
+    
+    # AI가 만든 확률 지도를 유전 알고리즘에 전달
+    optimizer = LottoGeneticOptimizer(avg_prediction, past_combinations)
+    
+    # 진화 시작 (500마리 개체, 50세대 진화)
+    best_combo, score = optimizer.evolve()
+    
+    final_nums = np.array(best_combo)
+    
+    # 확신도 계산 (AI 확률 평균)
+    confidence = sum([avg_prediction[n-1] for n in final_nums]) / 6 * 100
+    
+    print(" 진화 완료!")
+    print(f"👉 Game {labels[i]} 추천: {final_nums}")
+    print(f"   (💡 AI확신도: {confidence:.1f}% | 🧬 적합도 점수: {score:.2f})")
+    
+
+print("\n" + "=" * 60)
+input("✅ 모든 계산이 끝났습니다. 엔터 키를 눌러 종료하세요...")
+
+```
