@@ -230,7 +230,7 @@ input("✅ 고성능 예측 완료. 종료하려면 엔터 키를 누르세요..
 
 
 ## ver3
-
+Window Size를 260(약 5년치)를 보고 예측
 ```
 import pandas as pd
 import numpy as np
