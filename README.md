@@ -1366,3 +1366,217 @@ print("\n" + "=" * 60)
 input("✅ 모든 계산이 끝났습니다. 엔터 키를 눌러 종료하세요...")
 
 ```
+
+## ver9 
+
+```
+import pandas as pd
+import numpy as np
+import tensorflow as tf
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import LSTM, Dense, Input, Bidirectional, Flatten, Dropout, MultiHeadAttention, LayerNormalization, Add
+from tensorflow.keras.callbacks import ReduceLROnPlateau
+import sys
+import os
+import random
+
+# 1. 환경 설정
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+import warnings
+warnings.filterwarnings('ignore')
+
+print("🔥🔥 [ULTIMATE GRIND] 진정성 있는 고확신 모드 가동 🔥🔥")
+print("👉 전략: 안전장치(Dropout)를 켜서 과적합을 막고, 학습량(Epochs)을 1500회로 늘립니다.")
+print("👉 의미: '답안지 암기'가 아닌 '패턴의 완벽한 이해'를 추구합니다.")
+print("⏳ 학습량이 엄청나게 많습니다 (15~20분 소요). 컴퓨터를 켜두고 잠시 쉬다 오세요...")
+
+# 2. 데이터 읽기 및 전처리
+def read_csv_safe(filename):
+    try:
+        return pd.read_csv(filename, encoding='utf-8', header=None)
+    except UnicodeDecodeError:
+        return pd.read_csv(filename, encoding='cp949', header=None)
+
+try:
+    df1 = read_csv_safe('당첨(1~600).csv')
+    df2 = read_csv_safe('당첨(601~1203).csv')
+
+    data1 = df1.iloc[3:]
+    data2 = df2.iloc[3:]
+    full_df = pd.concat([data2, data1], axis=0)
+
+    full_df = full_df[[1, 2, 3, 4, 5, 6, 7]]
+    full_df.columns = ['Round', 'Num1', 'Num2', 'Num3', 'Num4', 'Num5', 'Num6']
+    full_df = full_df.apply(pd.to_numeric, errors='coerce').dropna()
+    full_df = full_df.sort_values('Round').reset_index(drop=True)
+
+    num_data = full_df[['Num1', 'Num2', 'Num3', 'Num4', 'Num5', 'Num6']].values
+
+    # 과거 당첨 번호 저장
+    past_combinations = set()
+    for row in num_data:
+        past_combinations.add(tuple(sorted(row)))
+
+    # 특성 엔지니어링
+    cold_data = np.zeros((len(num_data), 45))
+    current_cold = np.zeros(45)
+    for i in range(len(num_data)):
+        winning_nums = num_data[i] - 1
+        current_cold += 1
+        current_cold[winning_nums.astype(int)] = 0
+        cold_data[i] = current_cold.copy()
+    cold_data = cold_data / 50.0
+
+    # 원-핫 인코딩
+    def numbers_to_onehot(rows):
+        onehot = np.zeros((len(rows), 45))
+        for i, row in enumerate(rows):
+            for num in row:
+                onehot[i, int(num)-1] = 1
+        return onehot
+
+    onehot_data = numbers_to_onehot(num_data)
+    final_input = np.concatenate([onehot_data, cold_data], axis=1)
+
+    window_size = 25
+
+    def create_dataset(input_data, target_data, window_size):
+        X, y = [], []
+        for i in range(len(input_data) - window_size):
+            X.append(input_data[i : i + window_size])
+            y.append(target_data[i + window_size])
+        return np.array(X), np.array(y)
+
+    X, y = create_dataset(final_input, onehot_data, window_size)
+    last_window = final_input[-window_size:].reshape((1, window_size, 90))
+
+    print(f"✅ 데이터 준비 완료.")
+
+except Exception as e:
+    print(f"❌ 오류: {e}")
+    sys.exit()
+
+# 3. 모델 정의 (Dropout 복구됨)
+def create_grind_model():
+    inputs = Input(shape=(window_size, 90))
+
+    # Transformer Block
+    att = MultiHeadAttention(num_heads=8, key_dim=64)(inputs, inputs)
+    att = LayerNormalization(epsilon=1e-6)(Add()([inputs, att]))
+
+    # LSTM Block
+    # ✅ Dropout 0.2 복구: AI가 너무 자만하지 않게 견제함
+    x = Bidirectional(LSTM(256, return_sequences=True))(att)
+    x = Dropout(0.2)(x)
+
+    x = Bidirectional(LSTM(128, return_sequences=False))(x)
+    x = Dropout(0.2)(x)
+
+    # Dense Layers
+    x = Dense(512, activation='relu')(x)
+    x = Dropout(0.2)(x) # 여기도 안전장치 복구
+    x = Dense(256, activation='relu')(x)
+
+    outputs = Dense(45, activation='sigmoid')(x)
+
+    model = Model(inputs=inputs, outputs=outputs)
+    model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
+    return model
+
+# 4. 유전 알고리즘 (그대로 유지)
+class LottoGeneticOptimizer:
+    def __init__(self, probabilities, past_history, population_size=500, generations=50):
+        self.probs = probabilities
+        self.past_history = past_history
+        self.pop_size = population_size
+        self.generations = generations
+        self.mutation_rate = 0.1
+
+    def create_individual(self):
+        indices = np.arange(1, 46)
+        p = self.probs / self.probs.sum()
+        return sorted(np.random.choice(indices, 6, replace=False, p=p))
+
+    def fitness(self, individual):
+        score = sum([self.probs[num-1] for num in individual])
+        total_sum = sum(individual)
+        if total_sum < 100 or total_sum > 230: score -= 2.0
+        odds = sum([1 for n in individual if n % 2 != 0])
+        if odds == 0 or odds == 6: score -= 1.0
+        consecutive = 0
+        for i in range(len(individual)-1):
+            if individual[i+1] == individual[i] + 1: consecutive += 1
+        if consecutive >= 2: score -= 1.5
+        if tuple(individual) in self.past_history: score -= 100.0
+        return score
+
+    def evolve(self):
+        population = [self.create_individual() for _ in range(self.pop_size)]
+        for gen in range(self.generations):
+            scored_pop = [(ind, self.fitness(ind)) for ind in population]
+            scored_pop.sort(key=lambda x: x[1], reverse=True)
+            survivors = [x[0] for x in scored_pop[:int(self.pop_size * 0.2)]]
+            next_gen = survivors[:]
+            while len(next_gen) < self.pop_size:
+                parent1 = random.choice(survivors)
+                parent2 = random.choice(survivors)
+                split = random.randint(1, 5)
+                child = sorted(list(set(parent1[:split] + parent2[split:])))
+                while len(child) < 6:
+                    new_num = random.randint(1, 45)
+                    if new_num not in child: child.append(new_num)
+                child = sorted(child[:6])
+                if random.random() < self.mutation_rate:
+                    remove_idx = random.randint(0, 5)
+                    child.pop(remove_idx)
+                    while len(child) < 6:
+                        new_num = random.randint(1, 45)
+                        if new_num not in child: child.append(new_num)
+                    child.sort()
+                next_gen.append(child)
+            population = next_gen
+        scored_pop = [(ind, self.fitness(ind)) for ind in population]
+        scored_pop.sort(key=lambda x: x[1], reverse=True)
+        return scored_pop[0]
+
+# 5. 실행 로직 (극한의 학습량)
+print(f"\n🚀 [ULTIMATE GRIND] 5중 앙상블 + Epoch 1,500회 학습 시작...")
+print("=" * 60)
+
+labels = ['A', 'B', 'C', 'D', 'E']
+
+# 학습이 길어지므로 인내심을 20회까지 늘림 (쉽게 포기하지 않도록)
+lr_scheduler = ReduceLROnPlateau(monitor='loss', factor=0.5, patience=20, verbose=0)
+
+for i in range(5):
+    print(f"\n🧠 [Game {labels[i]}] 심층 분석 중... (인내심을 갖고 기다려주세요)")
+
+    print(f"   ↳ 🤖 AI 모델 5개 학습 중 (각 1,500회 반복)...", end="")
+    ensemble_preds = []
+
+    for m in range(5):
+        model = create_grind_model()
+        # ✅ Epochs 1500회: 안전장치를 켠 상태로 지독하게 학습시킴
+        # Batch Size 128: 속도 향상을 위해 조금 늘림
+        model.fit(X, y, epochs=1500, batch_size=128, callbacks=[lr_scheduler], verbose=0)
+        pred = model.predict(last_window, verbose=0)[0]
+        ensemble_preds.append(pred)
+        print(f" {m+1}/5..", end="")
+
+    avg_prediction = np.mean(ensemble_preds, axis=0)
+    print(" 앙상블 완료!")
+
+    print(f"   ↳ 🧬 최적 조합 도출 중...", end="")
+    optimizer = LottoGeneticOptimizer(avg_prediction, past_combinations)
+    best_combo, score = optimizer.evolve()
+
+    final_nums = np.array(best_combo)
+    confidence = sum([avg_prediction[n-1] for n in final_nums]) / 6 * 100
+
+    print(" 완료!")
+    print(f"👉 Game {labels[i]} 추천: {final_nums}")
+    print(f"   (💡 AI확신도: {confidence:.1f}% | 🧬 적합도 점수: {score:.2f})")
+
+print("\n" + "=" * 60)
+input("✅ 모든 극한의 연산이 끝났습니다. 좋은 결과를 기원합니다!")
+```
